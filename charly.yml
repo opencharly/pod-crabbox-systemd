@@ -12,11 +12,7 @@ defaults:
     registry: ghcr.io/opencharly
     build:
         - pac
-import:
-    # The CachyOS base image family, at the SAME tag the base lease image imports.
-    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.300.1129'
-    # The lease base image — the /crabbox SSH contract and its two init modes.
-    - crabbox: '@github.com/opencharly/pod-crabbox:v2026.307.1828'
+import: []
 discover:
     - path: candy
       recursive: true
@@ -41,7 +37,12 @@ pod-crabbox-systemd:
             `system-shutdown` hook that makes a poweroff/halt stop a krun guest
             cleanly, and declares the GitHub Actions runner's .NET runtime
             dependencies so a systemd lease can host a runner.
-        base: crabbox.pod-crabbox
+        base: ghcr.io/opencharly/pod-crabbox:2026.307.1828
+        # An OCI base does not inherit the parent's distro/build values, so the
+        # CachyOS chain is declared here; the base image is itself CachyOS.
+        distro:
+            - cachyos
+            - arch
         # systemd refuses to run in system mode as a non-root PID 1, so the image
         # ends at USER root exactly as the base image does; the LOGIN user stays
         # `crabbox` (uid 1000), created by the inherited candy.
