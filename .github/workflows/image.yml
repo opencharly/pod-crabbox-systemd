@@ -4,7 +4,7 @@
 # THE REF IS THE REUSABLE'S MERGED `main` (`d5fb8ac1ab20`, tag `v2026.307.0153`).
 #
 # WHY THIS TRIGGERS ON `workflow_run`, NOT `push: tags`. It used to listen on
-# `push: tags: ['v*']` and it NEVER FIRED: this repo merged and tagged
+# `push: tags: ['v*']` and it NEVER FIRED: `pod-crabbox` merged and tagged
 # (`v2026.307.1759` at `1b9a9c06`) and produced zero image runs — every `image` run on
 # record is `pull_request` (opencharly/.github#277). The reason is stated in the org's own
 # working workflow, `charly/.github/workflows/release-binary.yml`: tag-on-merge creates tags

@@ -40,10 +40,13 @@ Canonical files:
   `ARG BASE_IMAGE=ghcr.io/opencharly/pod-crabbox:ci-test123`. `defaults.tag: auto`
   is only the LOCAL-build fallback (a clock CalVer); it never names a release,
   because the CI caller always supplies the tag. Do not rely on the clock value.
-- **The base is imported, never copied.** `import: crabbox:
-  '@github.com/opencharly/pod-crabbox:<tag>'` — advancing that pin is the only
-  way a base-contract fix reaches this image. Run `charly box reconcile` for a
-  cross-repo pin alignment.
+- **The base is a pinned OCI artifact, never copied.** `base:
+  ghcr.io/opencharly/pod-crabbox:<tag>` pulls the published base image. It is NOT an
+  `import:`/`base: ns.box` pair: `charly box build --push` pushes every image in the
+  resolved chain, and a repo-scoped `GITHUB_TOKEN` cannot write the base packages
+  (`permission_denied: write_package`, measured on this repo's first publish,
+  `opencharly/.github#279`). The external form pushes only this repo's package.
+  Advancing the base is a one-line tag bump, produced first by the base repo.
 - **systemd is PID 1 through the OCI entrypoint, not `init:`.** The
   `systemd-container` init lands separately (`opencharly/charly#1030`); until it
   is in the engine pin this image expresses the same thing with
@@ -69,8 +72,9 @@ Canonical files:
 
 ## Modify this repo
 
-- Keep the pin of `pod-crabbox` and `distro-cachyos` in step; a base fix must land
-  in its owning repo first, then this repo's pin advances.
+- Keep the base tag in step: a base-contract fix lands in `opencharly/pod-crabbox` first,
+  then this repo's `base:` tag advances (producer-first). `charly box reconcile` does not
+  apply to an external OCI ref; the tag bump is explicit.
 - A package may be added only from a named source (the base candy, an existing
   `layer-*`/`pod-*` repo's Arch section, or the provider's docs). Record the
   source in a comment, as `icu`/`krb5`/`libunwind`/`lttng-ust` do.

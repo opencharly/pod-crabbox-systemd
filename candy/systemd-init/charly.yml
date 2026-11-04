@@ -22,6 +22,11 @@ systemd-init:
             branch. `openssl` is already in the base candy, and `zlib` is
             deliberately absent because CachyOS ships `zlib-ng-compat`, which
             provides libz — naming `zlib` would be an unresolvable conflict.
+        # The lease SSH port is the base image's own contract. An OCI base does not
+        # carry its candy chain's ports across the boundary, so the published number
+        # is restated here (one number, taken from the base image's label).
+        port:
+            - 2222
         distro:
             arch:
                 package:
@@ -108,3 +113,23 @@ systemd-init:
               exit_status: 0
               command: >-
                   pacman -Q icu krb5 libunwind lttng-ust
+            # The base is a published OCI artifact, so its contract is probed here at
+            # THIS image's boundary — not re-implemented, and not assumed from the tag.
+            - check: the inherited lease SSH contract is present (sshd, bootstrap, readiness hook)
+              id: systemd-init-lease-binaries
+              exit_status: 0
+              command: >-
+                  test -x /usr/sbin/sshd &&
+                  test -x /usr/local/libexec/crabbox/bootstrap.sh &&
+                  test -x /usr/local/libexec/crabbox/ready
+            - check: the inherited lease login user is crabbox at uid 1000
+              id: systemd-init-lease-user
+              exit_status: 0
+              command: >-
+                  test "$(getent passwd 1000 | cut -d: -f1)" = crabbox
+            - check: the inherited SSH drop-in names port 2222 and sshd parses it
+              id: systemd-init-lease-sshd
+              exit_status: 0
+              command: >-
+                  grep -qx 'Port 2222' /etc/ssh/sshd_config.d/99-crabbox.conf &&
+                  /usr/sbin/sshd -t
