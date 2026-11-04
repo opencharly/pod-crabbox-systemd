@@ -1,0 +1,56 @@
+# pod-crabbox-systemd — the systemd-init CachyOS lease image for the Crabbox
+# containerd provider.
+#
+# One repo per image (W5.2). The image imports the base lease image at a PINNED
+# tag, so the image tag and the git tag name the same build:
+# ghcr.io/opencharly/pod-crabbox-systemd:<tag> is the tree tagged <tag>.
+repo: github.com/opencharly/pod-crabbox-systemd
+defaults:
+    platform:
+        - linux/amd64
+    tag: auto
+    registry: ghcr.io/opencharly
+    build:
+        - pac
+import:
+    # The CachyOS base image family, at the SAME tag the base lease image imports.
+    - cachyos: '@github.com/opencharly/distro-cachyos:v2026.300.1129'
+    # The lease base image — the /crabbox SSH contract and its two init modes.
+    - crabbox: '@github.com/opencharly/pod-crabbox:v2026.307.1828'
+discover:
+    - path: candy
+      recursive: true
+
+# The systemd variant. Everything about the lease contract (sshd on 2222, the
+# `crabbox` login user with passwordless sudo, the read-only `/crabbox` inputs,
+# the shared bootstrap, the readiness hook) is inherited from the base image;
+# this image changes the init and adds what systemd-as-PID-1 needs.
+pod-crabbox-systemd:
+    candy:
+        description: |
+            The systemd-init CachyOS lease image for a Crabbox `containerd` lease:
+            the base `pod-crabbox` contract (sshd on 2222, user `crabbox` with
+            passwordless sudo, the read-only `/crabbox` inputs, the shared bootstrap
+            and the readiness hook) with systemd as PID 1 instead of the direct
+            `exec sshd -D` entrypoint. `sshd.service` and
+            `crabbox-bootstrap.service` are enabled against the same `/crabbox`
+            inputs, so a lease started under crun/runc `--systemd=always` or a krun
+            guest with `KRUN_INIT_PID1=1` gets the identical SSH contract. The image
+            also raises `kernel.pid_max` to 32768, masks `serial-getty@hvc0` (whose
+            getty otherwise hangs a krun boot on `dev-hvc0.device`), installs the
+            `system-shutdown` hook that makes a poweroff/halt stop a krun guest
+            cleanly, and declares the GitHub Actions runner's .NET runtime
+            dependencies so a systemd lease can host a runner.
+        base: crabbox.pod-crabbox
+        # systemd refuses to run in system mode as a non-root PID 1, so the image
+        # ends at USER root exactly as the base image does; the LOGIN user stays
+        # `crabbox` (uid 1000), created by the inherited candy.
+        user: root
+        uid: 0
+        gid: 0
+        # systemd as PID 1. The CachyOS base resolves /sbin/init -> /usr/bin/init ->
+        # /usr/lib/systemd/systemd (verified in the pinned base image).
+        entrypoint:
+            - /sbin/init
+        candy:
+            - systemd-init
