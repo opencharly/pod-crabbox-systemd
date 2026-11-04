@@ -35,8 +35,11 @@ Canonical files:
 
 - **The image tag IS the git tag.** The box is named after the repo, and
   `.github/workflows/image.yml` passes the newest `v*` tag (minus its `v`) to
-  `charly box build --tag`, which uses a supplied tag verbatim. Do not add a
-  clock-derived tag.
+  `charly box build --tag`, which uses a supplied tag verbatim — measured:
+  `charly box generate pod-crabbox-systemd --tag ci-test123` emits
+  `ARG BASE_IMAGE=ghcr.io/opencharly/pod-crabbox:ci-test123`. `defaults.tag: auto`
+  is only the LOCAL-build fallback (a clock CalVer); it never names a release,
+  because the CI caller always supplies the tag. Do not rely on the clock value.
 - **The base is imported, never copied.** `import: crabbox:
   '@github.com/opencharly/pod-crabbox:<tag>'` — advancing that pin is the only
   way a base-contract fix reaches this image. Run `charly box reconcile` for a
