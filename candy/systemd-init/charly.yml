@@ -1,0 +1,110 @@
+# systemd-init — what systemd-as-PID-1 adds to the base `pod-crabbox` lease contract.
+#
+# The base candy ships `crabbox-bootstrap.service` but never enables it (enabling a
+# unit would select systemd for the base image, which runs without it in direct
+# mode). Enabling it is THIS variant's decision, exactly as the base's AGENTS.md
+# says. `sshd.service` comes from the base candy's `openssh` package; the unit is
+# enabled here, not re-authored.
+systemd-init:
+    candy:
+        description: |
+            systemd as PID 1 for the CachyOS lease image. Enables `sshd.service` and
+            the base's `crabbox-bootstrap.service` against the shared `/crabbox`
+            inputs, masks `serial-getty@hvc0` (the hvc0 getty hangs a krun boot on
+            `dev-hvc0.device`), raises `kernel.pid_max` to 32768, installs
+            `/usr/lib/systemd/system-shutdown/krun-poweroff` (a poweroff/halt under
+            krun becomes `systemctl reboot -ff`, the only clean VM stop), and
+            declares the .NET runtime dependencies the GitHub Actions runner needs.
+
+            The runner's dependency set is the one measured in
+            `opencharly/pod-github-runner`'s Arch section (icu, krb5, libunwind,
+            lttng-ust): the runner's bundled `installdependencies.sh` has no Arch
+            branch. `openssl` is already in the base candy, and `zlib` is
+            deliberately absent because CachyOS ships `zlib-ng-compat`, which
+            provides libz — naming `zlib` would be an unresolvable conflict.
+        distro:
+            arch:
+                package:
+                    # .NET runtime deps for the actions-runner binary — the runner's
+                    # installdependencies.sh has no Arch branch, so they are declared
+                    # explicitly (same set as opencharly/pod-github-runner).
+                    - icu
+                    - krb5
+                    - libunwind
+                    - lttng-ust
+        plan:
+            # `link:` emits `ln -sf` and does not create the parent directory, unlike
+            # `copy:`/`write:`. The base image has /etc/systemd/system but not the
+            # multi-user wants directory.
+            - run: create the multi-user wants directory
+              mkdir: /etc/systemd/system/multi-user.target.wants
+              mode: "0755"
+              run_as: root
+            - run: enable sshd.service at boot
+              link: /etc/systemd/system/multi-user.target.wants/sshd.service
+              target: /usr/lib/systemd/system/sshd.service
+              run_as: root
+            - run: enable the shared /crabbox bootstrap unit at boot
+              link: /etc/systemd/system/multi-user.target.wants/crabbox-bootstrap.service
+              target: /etc/systemd/system/crabbox-bootstrap.service
+              run_as: root
+            - run: mask serial-getty@hvc0, whose getty hangs the krun boot on dev-hvc0.device
+              link: /etc/systemd/system/serial-getty@hvc0.service
+              target: /dev/null
+              run_as: root
+            - run: install the system-shutdown hook that stops a krun guest cleanly
+              write: /usr/lib/systemd/system-shutdown/krun-poweroff
+              mode: "0755"
+              run_as: root
+              content: |
+                #!/bin/sh
+                # systemd-shutdown invokes every executable here for each verb.
+                # Under krun a plain poweroff leaves the VM running; forcing the
+                # reboot is the only clean stop (CONTAINERD-IMAGES.md §2).
+                case "${1:-}" in
+                    poweroff|halt|kexec) exec systemctl reboot -ff ;;
+                esac
+                exit 0
+            # /etc/sysctl.d overrides /usr/lib/sysctl.d by filename: the base image
+            # ships a 50-pid-max.conf with the kernel default, so the same name here
+            # is the override systemd-sysctl(5) documents.
+            - run: raise the kernel PID ceiling
+              write: /etc/sysctl.d/50-pid-max.conf
+              mode: "0644"
+              run_as: root
+              content: |
+                # systemd-as-PID-1 lease image: the systemd PID ceiling the
+                # containerd/krun rows specify (CONTAINERD-IMAGES.md §2).
+                kernel.pid_max=32768
+            - check: /sbin/init resolves to the systemd binary, so the image can boot systemd as PID 1
+              id: systemd-init-binary
+              exit_status: 0
+              command: >-
+                  test "$(readlink -f /sbin/init)" = /usr/lib/systemd/systemd
+            - check: sshd.service and crabbox-bootstrap.service are enabled at boot
+              id: systemd-init-units-enabled
+              exit_status: 0
+              command: >-
+                  test -L /etc/systemd/system/multi-user.target.wants/sshd.service &&
+                  test -L /etc/systemd/system/multi-user.target.wants/crabbox-bootstrap.service
+            - check: serial-getty@hvc0 is masked to /dev/null
+              id: systemd-init-hvc0-masked
+              exit_status: 0
+              command: >-
+                  test "$(readlink /etc/systemd/system/serial-getty@hvc0.service)" = /dev/null
+            - check: the krun poweroff hook is executable and forces the stop
+              id: systemd-init-krun-poweroff
+              exit_status: 0
+              command: >-
+                  test -x /usr/lib/systemd/system-shutdown/krun-poweroff &&
+                  grep -q 'systemctl reboot -ff' /usr/lib/systemd/system-shutdown/krun-poweroff
+            - check: the pid_max drop-in is installed
+              id: systemd-init-pid-max
+              exit_status: 0
+              command: >-
+                  grep -qx 'kernel.pid_max=32768' /etc/sysctl.d/50-pid-max.conf
+            - check: the GitHub Actions runner's .NET runtime dependencies are installed
+              id: systemd-init-runner-deps
+              exit_status: 0
+              command: >-
+                  pacman -Q icu krb5 libunwind lttng-ust
