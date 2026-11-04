@@ -61,7 +61,7 @@ jobs:
   image:
     needs: tag
     if: github.event_name != 'workflow_run' || needs.tag.outputs.tag != ''
-    uses: opencharly/.github/.github/workflows/image-build.yml@main
+    uses: opencharly/.github/.github/workflows/image-build.yml@fix/280-always-login
     with:
       tag: ${{ needs.tag.outputs.tag }}
       push: ${{ github.event_name == 'workflow_run' }}
