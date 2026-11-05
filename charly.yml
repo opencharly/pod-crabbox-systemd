@@ -55,3 +55,174 @@ pod-crabbox-systemd:
             - /sbin/init
         candy:
             - systemd-init
+
+# =============================================================================
+# check-pod-crabbox-systemd-init — the disposable R10 bed for the systemd-init
+# lease image.
+#
+# The base repo's `check-pod-crabbox-lease` proves the `/crabbox` contract on
+# the DIRECT-mode image (`exec sshd -D`). This bed proves the same contract
+# still holds when systemd is PID 1 and the UNITS, not the entrypoint, own the
+# lifecycle. That is a different contract, not the same one on another image:
+# a direct-mode bed cannot see a unit that failed to start, a unit that was
+# never enabled, or an image that boots something other than systemd.
+#
+# The venue is a disposable pod built from the image under review; its
+# container and its input volume are torn down with it.
+#
+# This bed deliberately does NOT claim the containerd substrate: in the pinned
+# toolchain a `pod:` deploy's authored `engine:` selector is dropped by the
+# check-bed `config`/`start` path (`charly config` emits a podman quadlet) and
+# `charly deploy add --engine` is an unknown flag at 2026.307.1232 — filed as
+# opencharly/charly#1109. What this bed proves is this image's own,
+# engine-independent running contract on a disposable pod.
+#
+# Three steps, in the order that makes the bed a gate rather than a snapshot:
+#   1. ABSENCE  — reset the state, then prove PID 1 is systemd, no
+#                 authorized_keys are applied, and the freshly generated key is
+#                 REFUSED. The refusal must be an authentication refusal: a
+#                 venue that does not answer fails the step, so a broken
+#                 endpoint cannot read as "the contract is not applied yet".
+#   2. PERFORM  — write the read-only inputs temp + mv, then restart the
+#                 image's own `crabbox-bootstrap.service`, so the UNIT (not a
+#                 hand-run copy of the script) consumes them.
+#   3. PRESENCE — PID 1 is systemd, `sshd.service` and
+#                 `crabbox-bootstrap.service` are enabled and active, and over
+#                 the contract's own SSH path as `crabbox`: the key is
+#                 accepted, `sudo -n true` succeeds, and
+#                 `/usr/local/libexec/crabbox/ready` exits 0.
+#
+# The plan runs at every check-live pass, including the fresh-rebuild pass, so
+# step 1 resets and step 2 re-applies: each pass measures its OWN perform.
+# =============================================================================
+check-pod-crabbox-systemd-init:
+    pod:
+        image: pod-crabbox-systemd
+        disposable: true
+        lifecycle: test
+        description: >-
+            R10 witness for the pod-crabbox-systemd lease image: a disposable
+            container built from the image boots systemd as PID 1, and the bed
+            drives the whole `/crabbox` contract in three steps — ABSENCE
+            (systemd is PID 1, no authorized_keys, the key is refused), PERFORM
+            (the image's own `crabbox-bootstrap.service` consumes
+            authorized_keys, lease.env and bootstrap.sh), and PRESENCE (systemd
+            is PID 1, `sshd.service` and `crabbox-bootstrap.service` are
+            enabled and active, public-key SSH as `crabbox` on 2222,
+            passwordless sudo, and `/usr/local/libexec/crabbox/ready` exiting
+            0). A missing entrypoint, unit, unit enablement, listener, login
+            user, sudo grant, bootstrap or readiness hook fails the bed; a
+            venue that is not answering fails the absence step instead of
+            reading as "nothing applied yet". The containerd lease leg remains
+            plugin-crabbox's `check-crabbox-containerd-e2e` bed.
+        volume:
+            - name: lease-inputs
+              type: volume
+              path: /crabbox
+        plan:
+            - check: absence — systemd is PID 1 and no authorized_keys are applied; the freshly generated key is refused
+              id: systemd-lease-absent-before-bootstrap
+              context:
+                - runtime
+              timeout: 180s
+              command:
+                  command: |
+                      set -euo pipefail
+                      # The systemd delta this image owns: PID 1 must be systemd. A
+                      # target that boots any other init fails HERE, which is what
+                      # makes this step discriminate the image from its base.
+                      test "$(ps -p 1 -o comm=)" = systemd
+                      # `start` is idempotent and waits on the unit systemd owns,
+                      # so a container still finishing its boot cannot race the
+                      # probe (no sleep, no blind retry).
+                      systemctl start sshd.service
+                      systemctl is-active --quiet sshd.service
+                      # Reset whatever an earlier pass left behind: the plan runs at
+                      # every check-live pass, and after `charly update` the container
+                      # is rebuilt while the named input volume survives. The bed must
+                      # measure its OWN perform, never a leftover one.
+                      rm -f /crabbox/authorized_keys /crabbox/lease.env /crabbox/bootstrap.sh
+                      rm -rf /home/crabbox/.ssh
+                      rm -f /var/lib/crabbox/bootstrapped /var/lib/crabbox/lease.env /var/lib/crabbox/bootstrap-marker
+                      rm -f /tmp/crabbox-lease-key /tmp/crabbox-lease-key.pub
+                      # One ephemeral credential for both probes, so the ONLY
+                      # difference between the absence and presence steps is the
+                      # bootstrap's work.
+                      ssh-keygen -q -t ed25519 -N '' -f /tmp/crabbox-lease-key
+                      out=$(ssh -p 2222 -i /tmp/crabbox-lease-key \
+                        -o BatchMode=yes -o StrictHostKeyChecking=no \
+                        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+                        crabbox@127.0.0.1 true 2>&1 || true)
+                      case "$out" in
+                        *"Permission denied (publickey"*) ;;
+                        *)
+                          printf '%s\n' "$out" >&2
+                          echo "FAIL: expected the systemd lease to refuse the key over SSH; a venue that does not answer cannot prove the absence" >&2
+                          exit 1
+                          ;;
+                      esac
+                      test ! -e /home/crabbox/.ssh/authorized_keys
+                      echo "ABSENT: systemd is PID 1, no authorized_keys; the lease refuses the key"
+                  in_container: true
+            - check: perform — the image's own crabbox-bootstrap.service consumes the read-only inputs
+              id: systemd-bootstrap-performs-the-inputs
+              context:
+                - runtime
+              timeout: 180s
+              command:
+                  command: |
+                      set -euo pipefail
+                      install -d -m 0755 /crabbox
+                      # The consumer writes each input TEMP + mv; the bootstrap reads
+                      # each one ONCE. Write the same way, so the bed exercises the
+                      # contract's own input path rather than an in-place rewrite it
+                      # forbids.
+                      install -m 0644 /tmp/crabbox-lease-key.pub /crabbox/.authorized_keys.tmp
+                      printf 'crabbox_bed_nonce=%s\n' charly-pod-crabbox-systemd-bed > /crabbox/.lease.env.tmp
+                      printf '#!/bin/bash\nset -euo pipefail\nprintf "%%s\\n" "$crabbox_bed_nonce" > /var/lib/crabbox/bootstrap-marker\n' > /crabbox/.bootstrap.sh.tmp
+                      chmod 0755 /crabbox/.bootstrap.sh.tmp
+                      mv /crabbox/.authorized_keys.tmp /crabbox/authorized_keys
+                      mv /crabbox/.lease.env.tmp /crabbox/lease.env
+                      mv /crabbox/.bootstrap.sh.tmp /crabbox/bootstrap.sh
+                      # The UNIT, not a hand-run copy of the script, must consume them:
+                      # a systemd lease whose oneshot is broken is not a lease. Restart,
+                      # not start — the oneshot is already active (RemainAfterExit).
+                      systemctl restart crabbox-bootstrap.service
+                      systemctl is-active --quiet crabbox-bootstrap.service
+                      test -f /var/lib/crabbox/bootstrapped
+                      echo "PERFORMED: crabbox-bootstrap.service applied authorized_keys, sourced lease.env and ran bootstrap.sh"
+                  in_container: true
+            - check: presence — systemd PID 1, both units enabled and active, SSH as crabbox on 2222, passwordless sudo, and the readiness hook exit 0
+              id: systemd-lease-contract-present
+              context:
+                - runtime
+              timeout: 240s
+              command:
+                  command: |
+                      set -euo pipefail
+                      # The systemd contract: the image boots systemd, and the two
+                      # units the variant enables are enabled AND running.
+                      test "$(ps -p 1 -o comm=)" = systemd
+                      systemctl is-enabled --quiet sshd.service
+                      systemctl is-enabled --quiet crabbox-bootstrap.service
+                      systemctl is-active --quiet sshd.service
+                      systemctl is-active --quiet crabbox-bootstrap.service
+                      ss -ltn 'sport = :2222' | grep -q LISTEN
+                      # The perform pass's OWN work: the inputs were consumed by the
+                      # unit and its bootstrap ran to completion.
+                      test -f /var/lib/crabbox/bootstrapped
+                      test -f /var/lib/crabbox/lease.env
+                      marker=$(tr -d '\n' < /var/lib/crabbox/bootstrap-marker)
+                      test "$marker" = charly-pod-crabbox-systemd-bed
+                      # The lease's own SSH path, as the contract user.
+                      out=$(ssh -p 2222 -i /tmp/crabbox-lease-key \
+                        -o BatchMode=yes -o StrictHostKeyChecking=no \
+                        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+                        crabbox@127.0.0.1 \
+                        'id -un && sudo -n true && echo SUDO_OK && /usr/local/libexec/crabbox/ready && echo READY_OK')
+                      printf '%s\n' "$out"
+                      printf '%s\n' "$out" | grep -qx crabbox
+                      printf '%s\n' "$out" | grep -qx SUDO_OK
+                      printf '%s\n' "$out" | grep -qx READY_OK
+                      echo "PRESENT: systemd PID 1, both units enabled and active, SSH as crabbox on 2222, passwordless sudo, readiness hook exit 0"
+                  in_container: true
