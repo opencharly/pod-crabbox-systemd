@@ -142,7 +142,13 @@ check-pod-crabbox-systemd-init:
                       # is rebuilt while the named input volume survives. The bed must
                       # measure its OWN perform, never a leftover one.
                       rm -f /crabbox/authorized_keys /crabbox/lease.env /crabbox/bootstrap.sh
-                      rm -rf /home/crabbox/.ssh
+                      # The contract user's home is the passwd entry's field, never a
+                      # hardcoded /home/crabbox: this base adopts uid 1000 from the
+                      # distro image (measured: crabbox's home is /home/user), so a
+                      # hardcoded path would make the absence probe vacuous.
+                      home="$(getent passwd crabbox | cut -d: -f6)"
+                      test -n "$home" || { echo "FAIL: the lease user crabbox has no passwd home" >&2; exit 1; }
+                      rm -rf "$home/.ssh"
                       rm -f /var/lib/crabbox/bootstrapped /var/lib/crabbox/lease.env /var/lib/crabbox/bootstrap-marker
                       rm -f /tmp/crabbox-lease-key /tmp/crabbox-lease-key.pub
                       # One ephemeral credential for both probes, so the ONLY
@@ -161,7 +167,7 @@ check-pod-crabbox-systemd-init:
                           exit 1
                           ;;
                       esac
-                      test ! -e /home/crabbox/.ssh/authorized_keys
+                      test ! -e "$home/.ssh/authorized_keys"
                       echo "ABSENT: systemd is PID 1, no authorized_keys; the lease refuses the key"
                   in_container: true
             - check: perform — the image's own crabbox-bootstrap.service consumes the read-only inputs
